@@ -9,13 +9,11 @@
 #include "espconn.h"
 #include "user_interface.h"
 #include "user_config.h"
-#include "apconfig1.h" 
 
 
 
-//#include "driver/uart.h"
+#include "apconfig1.h" /* for SSID and SSID_PASSWORD */
 
-//#include "lld.h"
 
 
 LOCAL os_timer_t report_timer;
@@ -91,7 +89,6 @@ void data_received( void *arg, char *pdata, unsigned short len )
 
 void http_connected( void *arg )
 {
-    int temperature = 55;   // test data
     struct espconn *conn = arg;
     httpAdm_t * adm = conn->reverse;
 
@@ -103,7 +100,7 @@ void http_connected( void *arg )
     os_sprintf( buf, "%s %s HTTP/1.1\r\nHost:172.31.42.254\r\nConnection: close\r\n\r\n", 
                          adm->cmd, adm->path );
     
-    os_printf( "Sending: %s\n", buf );
+//    os_printf( "Sending: %s\n", buf );
     espconn_send( conn, buf, os_strlen( buf ) );
 
 }
@@ -114,9 +111,9 @@ void http_disconnected( void *arg )
     struct espconn *conn = arg;
     
     os_printf( "%s\n", __FUNCTION__ );
-    //wifi_station_disconnect();
-    os_delay_us(500000);
-    system_os_post(user_procTaskPrio, 0, 0 );
+
+    os_delay_us(1500000);
+//    system_os_post(user_procTaskPrio, 0, 0 );
 }
 
 
@@ -149,28 +146,38 @@ httpIP(ip_addr_t * ip, char * cmd, char * path, void * cb )
 }
 
 
+volatile int __cnt__ = 'A';
 
 static void ICACHE_FLASH_ATTR
 report(os_event_t *events)
 {
     int idx;
 
+
+    os_printf("PIN 4,5=%d,%d  %c.\n",GPIO_INPUT_GET(4),GPIO_INPUT_GET(5),__cnt__);
+
+    GPIO_OUTPUT_SET(0,~GPIO_INPUT_GET(0));
+
+//    os_printf("GPIOPENDING:%x.\n",gpio_intr_pending());
+
     os_printf("%s(&{%x,%x}).\n",__FUNCTION__,events->sig,events->par);
 
-    os_printf("%s: IP=%lX.\n",__FUNCTION__,cnc_ip.addr);
 
-    if (cnc_ip.addr!=0)
+    if (events->sig==2)
     {
+        if (cnc_ip.addr!=0)
+        {
+            os_printf("%s: IP=%lX.\n",__FUNCTION__,cnc_ip.addr);
 
-
-        httpIP(&cnc_ip,"GET", cnc_path,NULL);
+            httpIP(&cnc_ip,"GET", cnc_path,NULL);
+        }
+        else
+        {
+            os_printf("%s: Can't do http with IP=%lX.\n",__FUNCTION__,cnc_ip.addr);
+        }
 
     }
 
-
-
-//    os_delay_us(1500000);
-//    system_os_post(user_procTaskPrio, 0, 0 );
 }
 
 
@@ -181,7 +188,6 @@ report(os_event_t *events)
 
 void dns_done( const char *name, ip_addr_t *ipaddr, void *arg )
 {
-//    struct espconn *conn = arg;
     
     os_printf( "SOF:%s()\n", __FUNCTION__ );
     
@@ -221,6 +227,9 @@ void wifi_callback( System_Event_t *evt )
             
             //deep_sleep_set_option( 0 );
             //system_deep_sleep( 60 * 1000 * 1000 );  // 60 seconds
+        
+            wifi_station_connect();
+
             break;
         }
 
@@ -266,21 +275,50 @@ void wifi_callback( System_Event_t *evt )
 
 
 void ICACHE_FLASH_ATTR
+gpio_intr_handler(uint32_t iMask, void *arg)
+{
+    uint32_t gpio_status;
+    gpio_status = GPIO_REG_READ(GPIO_STATUS_ADDRESS);
+    __cnt__++;
+//    os_printf("\n[%x,%x,%x,%x]",GPIO_REG_READ(0x00),GPIO_REG_READ(0x04),GPIO_REG_READ(0x08),GPIO_REG_READ(0x0C));
+//    os_printf("[%x,%x,%x,%x]",GPIO_REG_READ(0x10),GPIO_REG_READ(0x14),GPIO_REG_READ(0x18),gpio_status);
+//    os_printf("[%x,%x,%x,%x]",GPIO_REG_READ(0x20),GPIO_REG_READ(0x24),GPIO_REG_READ(0x28),GPIO_REG_READ(0x2C));
+
+    if (gpio_status)
+    {
+        system_os_post(user_procTaskPrio, 2, gpio_status );
+    }
+
+    GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status);
+
+}
+
+
+void ICACHE_FLASH_ATTR
 sniffer_system_init_done(void)
 {
     int stat;
     os_printf("SOF %s().\n",__FUNCTION__);
-    // Promiscuous works only with station mode
 
-//    stat = wifi_set_channel(channel);
-//    os_printf("%s.%d: %d\n",__FUNCTION__,__LINE__, stat );
+    GPIO_OUTPUT_SET(0,1);
+   
+    PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO5_U,FUNC_GPIO5);
+    GPIO_DIS_OUTPUT(GPIO_ID_PIN(5));
+    PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO4_U,FUNC_GPIO4);
+    GPIO_DIS_OUTPUT(GPIO_ID_PIN(4));
 
-//    wifi_promiscuous_enable(0);
+    ETS_GPIO_INTR_DISABLE();
+//    gpio_intr_handler_register(gpio_intr_handler, NULL);
+    ETS_GPIO_INTR_ATTACH(gpio_intr_handler, NULL);
 
-    // Set up promiscuous callback
-//    wifi_set_promiscuous_rx_cb(promisc_cb);
+    gpio_pin_intr_state_set( GPIO_ID_PIN(5), GPIO_PIN_INTR_POSEDGE);
+    gpio_pin_intr_state_set( GPIO_ID_PIN(4), GPIO_PIN_INTR_POSEDGE);
 
-//    wifi_promiscuous_enable(1);
+    ETS_GPIO_INTR_ENABLE();
+
+
+//    gpio_pin_intr_state_set( 1<<5, GPIO_PIN_INTR_POSEDGE);
+//    gpio_pin_intr_state_set( 0x18, GPIO_PIN_INTR_ANYEDGE);
 
     os_printf("EOF %s().\n",__FUNCTION__);
 }
@@ -297,9 +335,7 @@ user_init()
     uart_div_modify( 0, UART_CLK_FREQ / ( 115200 ) );
     os_printf("\n\nSDK version:%s\n", system_get_sdk_version());
     
-    // Promiscuous works only with station mode
-
-    wifi_station_set_hostname( "esper1" );
+    wifi_station_set_hostname( "button" );
     wifi_set_opmode(STATION_MODE);
 
     gpio_init();
@@ -315,20 +351,8 @@ user_init()
 
     wifi_station_connect();
     
-    // Set timer for deauth
-//    os_timer_disarm(&deauth_timer);
-    //os_timer_setfn(&deauth_timer, (os_timer_func_t *) deauth, NULL);
-//    os_timer_arm(&deauth_timer, CHANNEL_HOP_INTERVAL, 1);
-
-//    os_timer_disarm(&report_timer);
-//    os_timer_setfn(&report_timer, (os_timer_func_t *)report, NULL);
-//    os_timer_arm(&report_timer, 1000, 0);
-
-
     system_os_task(report, user_procTaskPrio,user_procTaskQueue, user_procTaskQueueLen);
-//    system_os_post(user_procTaskPrio, 0, 0 );
 
-    // Continue to 'sniffer_system_init_done'
     system_init_done_cb(sniffer_system_init_done);
     os_printf("EOF %s().\n",__FUNCTION__);
 }
